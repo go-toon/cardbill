@@ -10,6 +10,7 @@ package creditcard
 import (
 	"context"
 	"github.com/go-kit/kit/endpoint"
+	"github.com/nsini/cardbill/src/middleware"
 	"github.com/nsini/cardbill/src/util/encode"
 )
 
@@ -30,8 +31,15 @@ type postRequest struct {
 	TailNumber  int64   `json:"tail_number"`
 }
 
+type recordRequest struct {
+	Id       int64
+	Page     int
+	PageSize int
+}
+
 type listRequest struct {
 	BankId int64 `json:"bank_id"`
+	State  int   `json:"state"`
 }
 
 type StatisticsResponse struct {
@@ -65,8 +73,12 @@ func makeGetEndpoint(s Service) endpoint.Endpoint {
 
 func makeListEndpoint(s Service) endpoint.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
+		userId, ok := ctx.Value(middleware.UserIdContext).(int64)
+		if !ok {
+			return nil, middleware.ErrCheckAuth
+		}
 		req := request.(listRequest)
-		res, err := s.List(ctx, req.BankId)
+		res, err := s.List(ctx,userId, req.BankId, req.State)
 		return encode.Response{Err: err, Data: res}, err
 	}
 }
@@ -84,5 +96,20 @@ func makeStatisticsEndpoint(s Service) endpoint.Endpoint {
 	return func(ctx context.Context, request interface{}) (interface{}, error) {
 		res, err := s.Statistics(ctx)
 		return encode.Response{Err: err, Data: res}, err
+	}
+}
+
+func makeRecordEndpoint(s Service) endpoint.Endpoint {
+	return func(ctx context.Context, request interface{}) (interface{}, error) {
+		req := request.(recordRequest)
+		res, count, err := s.Record(ctx, req.Id, req.Page, req.PageSize)
+		return encode.Response{Err: err, Data: map[string]interface{}{
+			"list": res,
+			"pagination": map[string]interface{}{
+				"total":    count,
+				"current":  req.Page,
+				"pageSize": req.PageSize,
+			},
+		}}, err
 	}
 }

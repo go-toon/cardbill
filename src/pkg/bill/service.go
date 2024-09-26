@@ -15,6 +15,7 @@ import (
 	"github.com/nsini/cardbill/src/middleware"
 	"github.com/nsini/cardbill/src/repository"
 	"github.com/nsini/cardbill/src/repository/types"
+	"github.com/nsini/cardbill/src/util/date"
 	"time"
 )
 
@@ -37,6 +38,9 @@ type Service interface {
 	// installmentAmount: 分期金额
 	// monthlyRepayment: 月还款金额
 	Installment(ctx context.Context, int int64, period int, installmentAmount, monthlyRepayment float64) (err error)
+
+	// 最近一周要还款的卡
+	RecentRepay(ctx context.Context, recent int) (res []*types.Bill, err error)
 }
 
 var (
@@ -51,6 +55,27 @@ type service struct {
 
 func NewService(logger log.Logger, repository repository.Repository) Service {
 	return &service{logger, repository}
+}
+
+func (c *service) RecentRepay(ctx context.Context, recent int) (res []*types.Bill, err error) {
+	userId := ctx.Value(middleware.UserIdContext).(int64)
+
+	cards, err := c.repository.CreditCard().FindByUserId(userId, 0, -1)
+	if err != nil {
+		return
+	}
+
+	var cardIds []int64
+
+	for _, card := range cards {
+		cardIds = append(cardIds, card.Id)
+	}
+
+	now := time.Now()
+
+	t := now.AddDate(0, 0, +recent)
+
+	return c.repository.Bill().LastBill(cardIds, 10, &t)
 }
 
 func (c *service) Installment(ctx context.Context, int int64, period int, installmentAmount, monthlyRepayment float64) (err error) {
@@ -68,7 +93,7 @@ func (c *service) ListByCard(ctx context.Context, cardId int64, page, pageSize i
 func (c *service) List(ctx context.Context, page, pageSize int) (res []*types.Bill, count int64, err error) {
 	userId := ctx.Value(middleware.UserIdContext).(int64)
 
-	cards, err := c.repository.CreditCard().FindByUserId(userId, 0)
+	cards, err := c.repository.CreditCard().FindByUserId(userId, 0, -1)
 	if err != nil {
 		return
 	}
@@ -126,18 +151,18 @@ func (c *service) GenBill(ctx context.Context, day int) (err error) {
 	year, month, _ := curr.Date()
 
 	for _, card := range cards {
-		startTime := time.Date(year, month-1, card.BillingDay, 0, 0, 0, 1, &time.Location{})
-		endTime := time.Date(year, month, card.BillingDay, 0, 0, 0, 1, &time.Location{})
+		endTime := time.Date(year, month, card.BillingDay, 0, 0, 0, 1, time.Local)
 
-		billAmount, err := c.repository.ExpenseRecord().RemainingAmount(card.Id, startTime, endTime)
+		// 还款日计算会有问题 可以考虑使用util.date.ParseCardBillAndHolderDay方法生成
+		billing, holder := date.ParseCardBillAndHolderDay(card.BillingDay, card.Cardholder)
+
+		billAmount, err := c.repository.ExpenseRecord().RemainingAmount(card.Id, billing, endTime)
 		if err != nil {
-			_ = level.Error(c.logger).Log("cardId", card.Id, "startTime", startTime.String(), "endTime", endTime, "ExpenseRecord", "RemainingAmount", "err", err.Error())
+			_ = level.Error(c.logger).Log("cardId", card.Id, "startTime", billing.String(), "endTime", endTime, "ExpenseRecord", "RemainingAmount", "err", err.Error())
 			continue
 		}
 
-		t := time.Date(year, time.Month(int(month)+1), 3, 0, 0, 0, 0, time.Local)
-
-		if err = c.repository.Bill().Create(card.Id, billAmount.Amount, t); err != nil {
+		if err = c.repository.Bill().Create(card.Id, billAmount.Amount, holder); err != nil {
 			_ = level.Error(c.logger).Log("cardId", card.Id, "amount", billAmount.Amount, "Bill", "Create", "err", err.Error())
 		}
 	}
